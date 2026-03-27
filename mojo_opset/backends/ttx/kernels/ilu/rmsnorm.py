@@ -5,6 +5,7 @@ import triton
 import triton.language as tl
 
 from .utils import VEC_ALIGN_BYTES
+from .utils import ilu_grid_dim_from_row_tasks
 from .utils import libentry
 from mojo_opset.backends.ttx.kernels.utils import align
 from mojo_opset.backends.ttx.kernels.utils import ceil_div
@@ -22,7 +23,8 @@ TOKEN_BLOCK_SIZE_TABLE = {
     2048: 4,
     1024: 8,
     512: 10,
-    256: 18,
+    # 18 triggers ILU Triton CompilationError for (small_batch, 256); use power-of-two tile.
+    256: 16,
     128: 24,
 }
 
@@ -39,6 +41,12 @@ def rms_norm_fwd_heuristics(args):
         return 1
     else:
         return 4
+
+
+def _rmsnorm_fwd_grid_n_programs(n_rows: int, n_cols: int) -> int:
+    block_m = rms_norm_fwd_heuristics({"n_cols": n_cols})
+    n_tasks = triton.cdiv(n_rows, block_m)
+    return ilu_grid_dim_from_row_tasks(n_tasks)
 
 
 @triton.heuristics({"BLOCK_SIZE_M": rms_norm_fwd_heuristics})
@@ -129,9 +137,7 @@ def rmsnorm_infer_impl(
     else:
         BLOCK_SIZE_N = align(x, n_cols, VEC_ALIGN_BYTES)
 
-    num_programs = triton.runtime.driver.active.utils.get_device_properties("ilu")["num_vectorcore"]
-
-    grid = (num_programs,)
+    grid = (_rmsnorm_fwd_grid_n_programs(n_rows, n_cols),)
 
     _rmsnorm_infer_kernel[grid](
         x,
@@ -412,9 +418,7 @@ def rmsnorm_fwd_impl(
     else:
         BLOCK_SIZE_N = align(X, n_cols, VEC_ALIGN_BYTES)
 
-    num_programs = triton.runtime.driver.active.utils.get_device_properties("ilu")["num_vectorcore"]
-
-    grid = (num_programs,)
+    grid = (_rmsnorm_fwd_grid_n_programs(n_rows, n_cols),)
     Y = torch.empty_like(X_2d)
 
     rstd_dtype = torch.float32 if casting_mode_int in (0, 1) else X.dtype
@@ -456,15 +460,14 @@ def rmsnorm_bwd_impl(
     X_2d = X.reshape(-1, dim)
     n_rows, n_cols = dY_2d.shape
 
-    num_programs = triton.runtime.driver.active.utils.get_device_properties("ilu")["num_vectorcore"]
     X_dtype_triton = torch_to_triton_dtype[X_dtype]
-
-    grid = (num_programs,)
 
     dX_2d = torch.empty_like(dY_2d)
 
     if n_cols <= COL_BLOCKING_THRESHOLD:
-        _dW = torch.zeros((num_programs, n_cols), dtype=torch.float32, device=W.device)
+        n_programs = ilu_grid_dim_from_row_tasks(triton.cdiv(n_rows, ceil_div(4096, n_cols)))
+        grid = (n_programs,)
+        _dW = torch.zeros((n_programs, n_cols), dtype=torch.float32, device=W.device)
         _rmsnorm_bwd_kernel[grid](
             dY_2d,
             dY_2d.stride(0),
@@ -486,8 +489,10 @@ def rmsnorm_bwd_impl(
         )
         dW = _dW.sum(dim=0).to(W.dtype)
     else:
+        n_programs = ilu_grid_dim_from_row_tasks(triton.cdiv(n_rows, 2))
+        grid = (n_programs,)
         if IS_DETERMINISTIC:
-            _dW = torch.zeros((num_programs, n_cols), dtype=torch.float32, device=W.device)
+            _dW = torch.zeros((n_programs, n_cols), dtype=torch.float32, device=W.device)
         else:
             _dW = torch.zeros((1, n_cols), dtype=torch.float32, device=W.device)
 

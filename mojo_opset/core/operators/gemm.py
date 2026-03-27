@@ -43,20 +43,46 @@ class MojoGroupGemm(MojoOperator):
         assert self.weight.size(0) == num_groups, "self.weight must have same group count as group_list"
 
         if self.trans_weight:
+            num_groups_w, n, bk = self.weight.shape
+            strideBN, strideBK = self.weight.stride(1), self.weight.stride(2)
+        else:
+            num_groups_w, bk, n = self.weight.shape
+            strideBK, strideBN = self.weight.stride(1), self.weight.stride(2)
+
+        m, k = input.shape
+        assert bk == k, "K of input should be equal to K of self.weight."
+        assert num_groups_w == num_groups
+
+        from mojo_opset.utils.platform import get_platform
+
+        if get_platform() == "ilu":
+            from mojo_opset.backends.ttx.kernels import m_grouped_matmul
+
+            out = input.new_empty(m, n)
+            m_grouped_matmul(
+                input,
+                self.weight,
+                out,
+                group_list,
+                num_groups,
+                m,
+                n,
+                k,
+                strideBN,
+                strideBK,
+                self.trans_weight,
+            )
+            return out
+
+        if self.trans_weight:
             weight = self.weight.transpose(1, 2).contiguous()
         else:
             weight = self.weight
-
         group_start = group_list.cumsum(0) - group_list
         group_end = group_list.cumsum(0)
-
         out_list = []
         for g, (start, end) in enumerate(zip(group_start.tolist(), group_end.tolist())):
-            a_g = input[start:end, :]
-            b_g = weight[g, :, :]
-            out_g = a_g @ b_g
-            out_list.append(out_g)
-
+            out_list.append(input[start:end, :] @ weight[g, :, :])
         return torch.cat(out_list, dim=0)
 
     def extra_repr(self) -> str:
@@ -118,6 +144,18 @@ class MojoQuantGroupLinearReduceSum(MojoOperator):
         b_w, k_w, n = weight.shape
         assert b == b_w, "input and weight must have same batch size"
         assert k == k_w, "K of input should be equal to K of weight"
+
+        from mojo_opset.utils.platform import get_platform
+
+        if get_platform() == "ilu":
+            from mojo_opset.backends.ttx.kernels import quant_group_linear_reduce_sum_impl
+
+            return quant_group_linear_reduce_sum_impl(
+                input.contiguous(),
+                weight.contiguous(),
+                x1_scale,
+                x2_scale,
+            )
 
         if x2_scale.dtype != torch.bfloat16:
             x2_scale = x2_scale.to(torch.bfloat16)

@@ -11,7 +11,7 @@ from mojo_opset.core import MojoSdpa
 
 
 class TTXPagedPrefillGQA(MojoPagedPrefillGQA):
-    supported_platforms_list = ["npu"]
+    supported_platforms_list = ["npu", "ilu"]
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -37,7 +37,12 @@ class TTXPagedPrefillGQA(MojoPagedPrefillGQA):
         )
         assert mask is None, f"[TTXPagedPrefillGQA] TTX does not support mask, but got mask={mask}"
         if self.aux_mask is None:
-            self.aux_mask = torch.ones(self.AUX_MASK_SIZE, self.AUX_MASK_SIZE * 3, dtype=torch.bool).tril(self.AUX_MASK_SIZE).npu()
+            self.aux_mask = torch.ones(
+                self.AUX_MASK_SIZE,
+                self.AUX_MASK_SIZE * 3,
+                dtype=torch.bool,
+                device=query.device,
+            ).tril(self.AUX_MASK_SIZE)
 
         output = paged_attention_prefill(
             q=query,
@@ -55,7 +60,7 @@ class TTXPagedPrefillGQA(MojoPagedPrefillGQA):
 
 
 class TTXPagedDecodeGQA(MojoPagedDecodeGQA):
-    supported_platforms_list = ["npu"]
+    supported_platforms_list = ["npu", "ilu"]
 
     def forward(
         self,
@@ -89,7 +94,7 @@ class TTXPagedDecodeGQA(MojoPagedDecodeGQA):
 
 
 class TTXSdpa(MojoSdpa):
-    supported_platforms_list = ["npu"]
+    supported_platforms_list = ["npu", "ilu"]
 
     def forward(
         self,

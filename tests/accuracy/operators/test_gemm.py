@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from tests.utils import bypass_not_implemented
 
 from mojo_opset import MojoLinear
+from mojo_opset.utils.acc import check_tol_diff
 
 
 @pytest.mark.parametrize(
@@ -34,7 +35,8 @@ def test_gemm(m, k, n, dtype, bias):
     )
     gemm_ref.load_state_dict(gemm.state_dict())
 
-    gemm.forward_diff_with(gemm_ref, input, mixed_tol=True)
-    torch_out = F.linear(input, gemm.weight, gemm.bias)
-    mojo_out = gemm(input)
-    torch.testing.assert_close(mojo_out, torch_out)
+    with torch.inference_mode():
+        gemm.forward_diff_with(gemm_ref, input, mixed_tol=True)
+        torch_out = F.linear(input, gemm.weight, gemm.bias)
+        mojo_out = gemm(input)
+    check_tol_diff(mojo_out, torch_out, mixed_tol=True)

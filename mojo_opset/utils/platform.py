@@ -41,6 +41,17 @@ def get_platform() -> Literal["npu", "mlu", "meta_device", "ilu"]:
     return "meta_device"
 
 
+def get_torch_device_type() -> str:
+    """
+    PyTorch device string for tensor allocation and ``torch.set_default_device``.
+
+    Mojo reports Iluvatar (and any CUDA stack probed first) as ``ilu``; PyTorch uses ``cuda``.
+    With no accelerator, fall back to ``cpu`` for tests.
+    """
+    p = get_platform()
+    return "cuda" if p == "ilu" else p
+
+
 def get_impl_by_platform():
     import_op_map = {}
     from mojo_opset.core.function import MojoFunction

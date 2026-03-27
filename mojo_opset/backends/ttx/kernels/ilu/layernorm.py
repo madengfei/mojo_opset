@@ -5,6 +5,7 @@ import triton.language as tl
 from triton.language.math import rsqrt
 
 from .utils import VEC_ALIGN_BYTES
+from .utils import ilu_grid_dim_from_row_tasks
 from .utils import libentry
 from mojo_opset.backends.ttx.kernels.utils import align
 from mojo_opset.backends.ttx.kernels.utils import ceil_div
@@ -16,7 +17,8 @@ TOKEN_BLOCK_SIZE_TABLE = {
     2048: 4,
     1024: 8,
     512: 10,
-    256: 18,
+    # 18 triggers ILU Triton CompilationError for (small_batch, 256); use power-of-two tile.
+    256: 16,
     128: 24,
 }
 
@@ -33,6 +35,12 @@ def layer_norm_fwd_heuristics(args):
         return 1
     else:
         return 4
+
+
+def _layernorm_fwd_grid_n_programs(n_rows: int, n_cols: int) -> int:
+    block_m = layer_norm_fwd_heuristics({"n_cols": n_cols})
+    n_tasks = triton.cdiv(n_rows, block_m)
+    return ilu_grid_dim_from_row_tasks(n_tasks)
 
 
 @triton.heuristics({"BLOCK_SIZE_M": layer_norm_fwd_heuristics})
@@ -297,8 +305,7 @@ def layernorm_infer_impl(
     else:
         BLOCK_SIZE_N = align(hidden_states, n_cols, VEC_ALIGN_BYTES)
 
-    num_programs = triton.runtime.driver.active.utils.get_device_properties("ilu")["num_vectorcore"]
-    grid = (num_programs,)
+    grid = (_layernorm_fwd_grid_n_programs(n_rows, n_cols),)
 
     y = torch.empty_like(x_2d)
     mean = torch.empty(n_rows, dtype=hidden_states.dtype, device=hidden_states.device)
@@ -333,8 +340,7 @@ def layernorm_fwd_impl(x, w, b, eps):
     else:
         BLOCK_SIZE_N = align(x, n_cols, VEC_ALIGN_BYTES)
 
-    num_programs = triton.runtime.driver.active.utils.get_device_properties("ilu")["num_vectorcore"]
-    grid = (num_programs,)
+    grid = (_layernorm_fwd_grid_n_programs(n_rows, n_cols),)
 
     y = torch.empty_like(x_2d)
     mean = torch.empty(n_rows, dtype=x.dtype, device=x.device)
@@ -369,12 +375,10 @@ def layernorm_bwd_impl(dy, x_2d, w, b, mean, rstd):
     else:
         BLOCK_SIZE_N = align(x_2d, n_cols, VEC_ALIGN_BYTES)
 
-    num_programs = triton.runtime.driver.active.utils.get_device_properties("ilu")["num_vectorcore"]
-    grid = (num_programs,)
-
     dx = torch.empty_like(dy_2d)
 
     if n_cols <= COL_BLOCKING_THRESHOLD:
+        grid = (ilu_grid_dim_from_row_tasks(triton.cdiv(n_rows, ceil_div(4096, n_cols))),)
         dw = torch.zeros(n_cols, dtype=torch.float32, device=w.device)
         db = torch.zeros(n_cols, dtype=torch.float32, device=b.device)
 
@@ -396,6 +400,7 @@ def layernorm_bwd_impl(dy, x_2d, w, b, mean, rstd):
             BLOCK_SIZE_N=BLOCK_SIZE_N,
         )
     else:
+        grid = (ilu_grid_dim_from_row_tasks(triton.cdiv(n_rows, 2)),)
         dw = torch.zeros(n_cols, dtype=torch.float32, device=w.device)
         db = torch.zeros(n_cols, dtype=torch.float32, device=b.device)
 

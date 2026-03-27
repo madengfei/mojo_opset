@@ -27,7 +27,12 @@ class MojoLinear(MojoOperator):
         self.reset_parameters()
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        return F.linear(input, self.weight, self.bias)
+        try:
+            from mojo_opset.backends.ttx.kernels import linear_fwd_impl
+
+            return linear_fwd_impl(input, self.weight, self.bias)
+        except (NotImplementedError, TypeError):
+            return F.linear(input, self.weight, self.bias)
 
     def reset_parameters(self) -> None:
         nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))

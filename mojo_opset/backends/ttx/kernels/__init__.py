@@ -66,12 +66,15 @@ diffusion_attention_bwd_impl = _get_kernel_impl(ttx_backend_module, "diffusion_a
 
 m_grouped_matmul_impl = _get_kernel_impl(ttx_backend_module, "m_grouped_matmul_impl")
 k_grouped_matmul_impl = _get_kernel_impl(ttx_backend_module, "k_grouped_matmul_impl")
+quant_group_linear_reduce_sum_impl = _get_kernel_impl(ttx_backend_module, "quant_group_linear_reduce_sum_impl")
 
 store_paged_kv_impl = _get_kernel_impl(ttx_backend_module, "store_paged_kv_impl")
 
 store_label_cache_infer_impl = _get_kernel_impl(ttx_backend_module, "store_label_cache_infer_impl")
 
 fused_penalties_temp_impl = _get_kernel_impl(ttx_backend_module, "fused_penalties_temp_impl")
+relative_embedding_fwd_impl = _get_kernel_impl(ttx_backend_module, "relative_embedding_fwd_impl")
+linear_fwd_impl = _get_kernel_impl(ttx_backend_module, "linear_fwd_impl")
 join_prob_reject_sampling_impl = _get_kernel_impl(ttx_backend_module, "join_prob_reject_sampling_impl")
 reject_sampling_impl = _get_kernel_impl(ttx_backend_module, "reject_sampling_impl")
 top_p_filter_impl = _get_kernel_impl(ttx_backend_module, "top_p_filter_impl")
@@ -701,6 +704,7 @@ else:
     diffusion_attention_bwd = diffusion_attention_bwd_impl
     m_grouped_matmul = m_grouped_matmul_impl
     k_grouped_matmul = k_grouped_matmul_impl
+    quant_group_linear_reduce_sum = quant_group_linear_reduce_sum_impl
     store_paged_kv = store_paged_kv_impl
     store_label_cache_infer = store_label_cache_infer_impl
     fused_penalties_temp = fused_penalties_temp_impl
