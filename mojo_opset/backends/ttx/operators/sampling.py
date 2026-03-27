@@ -19,7 +19,7 @@ from mojo_opset.core import MojoTopPSampling
 
 
 class TTXTopPSampling(MojoTopPSampling):
-    supported_platforms_list = ["npu"]
+    supported_platforms_list = ["npu", "ilu"]
 
     def forward(self, logits: torch.Tensor) -> Tuple[Any]:
         return top_p_sampling(
@@ -32,7 +32,7 @@ class TTXTopPSampling(MojoTopPSampling):
 
 
 class TTXTopPFilter(MojoTopPFilter):
-    supported_platforms_list = ["npu"]
+    supported_platforms_list = ["npu", "ilu"]
 
     def forward(self, logits: torch.Tensor, top_p: float, min_tokens_to_keep: int, rand_top_k: int) -> Tuple[Any]:
         return top_p_filter(
@@ -77,7 +77,7 @@ class TTXJoinProbRejectSampling(MojoJoinProbRejectSampling):
 
 
 class TTXApplyPenaltiesTempurate(MojoApplyPenaltiesTempurate):
-    supported_platforms_list = ["npu"]
+    supported_platforms_list = ["npu", "ilu"]
 
     def forward(
         self,

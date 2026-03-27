@@ -21,7 +21,7 @@ except Exception:
     torch_npu = None
 
 from mojo_opset.utils.logging import get_logger
-from mojo_opset.utils.platform import get_platform
+from mojo_opset.utils.platform import get_platform, get_torch_device_type
 
 logger = get_logger(__name__)
 
@@ -234,7 +234,8 @@ def auto_switch_platform(set_perf: bool = False):
     Returns:
         Callable: The decorated function.
     """
-    device = get_platform()
+    # device = get_platform()
+    device = get_torch_device_type()
 
     if set_perf:
         if device == "npu":
