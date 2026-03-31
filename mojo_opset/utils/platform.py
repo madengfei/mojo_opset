@@ -19,7 +19,7 @@ def get_platform() -> Literal["npu", "mlu", "meta_device", "ilu"]:
     Detect whether the system has NPU or MLU, fallback device is meta_device.
     """
     try:
-        if torch.cuda.is_available():
+        if torch.cuda.get_device_name().startswith("Iluvatar"):
             logger.info("Iluvatar GPU detected")
             return "ilu"
     except Exception as e:
@@ -41,15 +41,38 @@ def get_platform() -> Literal["npu", "mlu", "meta_device", "ilu"]:
     return "meta_device"
 
 
-def get_torch_device_type() -> str:
-    """
-    PyTorch device string for tensor allocation and ``torch.set_default_device``.
+_PLATFORM_TO_TORCH_DEVICE = {
+    "npu": "npu",
+    "mlu": "mlu",
+    "ilu": "cuda",
+    "meta_device": "meta",
+}
 
-    Mojo reports Iluvatar (and any CUDA stack probed first) as ``ilu``; PyTorch uses ``cuda``.
-    With no accelerator, fall back to ``cpu`` for tests.
+
+@functools.lru_cache
+def get_torch_device() -> str:
+    """Map the internal platform identifier to a PyTorch-recognised device string."""
+    platform = get_platform()
+    return _PLATFORM_TO_TORCH_DEVICE.get(platform, platform)
+
+
+_PLATFORM_TO_DIST_BACKEND = {
+    "npu": "hccl",
+    "mlu": "gloo",
+    "meta_device": "gloo",
+}
+
+
+@functools.lru_cache
+def get_dist_backend() -> str:
+    """Return the distributed communication backend for the current platform.
+
+    Mapping:
+        npu  → hccl
+        mlu  → gloo   (placeholder, update when cncl is available)
+        else → gloo
     """
-    p = get_platform()
-    return "cuda" if p == "ilu" else p
+    return _PLATFORM_TO_DIST_BACKEND.get(get_platform(), "gloo")
 
 
 def get_impl_by_platform():

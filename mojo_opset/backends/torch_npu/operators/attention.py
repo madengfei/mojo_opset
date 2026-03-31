@@ -17,10 +17,8 @@ class TorchNpuPrefillGQA(MojoPrefillGQA, default_priority=0):
         is_causal: bool = True,
         gqa_layout: str = "ABAB",
         window_size: int = -1,
-        op_name: str = "",
-        layer_idx: int = 0,
     ):
-        super().__init__(is_causal, gqa_layout, False, window_size, op_name, layer_idx)
+        super().__init__(is_causal=is_causal, gqa_layout=gqa_layout, rm_padding=False, window_size=window_size)
 
     def forward(
         self,
@@ -69,8 +67,8 @@ class TorchNpuPagedPrefillGQA(MojoPagedPrefillGQA, default_priority=0):
     def forward(
         self,
         query: torch.Tensor,
-        k_cache: torch.Tensor,
-        v_cache: torch.Tensor,
+        key_cache: torch.Tensor,
+        value_cache: torch.Tensor,
         cu_seqlens_q: torch.Tensor,
         block_tables: torch.Tensor,
         softmax_scale: Optional[float] = None,
@@ -78,11 +76,11 @@ class TorchNpuPagedPrefillGQA(MojoPagedPrefillGQA, default_priority=0):
         mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         _, num_q_heads, head_dim = query.shape
-        _, num_kv_heads, block_size, _ = k_cache.shape
+        _, num_kv_heads, block_size, _ = key_cache.shape
 
         if block_size % 128 != 0 or block_size > 512:
             # high performance attention kernel only supports block_size % 128 == 0 and block_size <= 512
-            return super().forward(query, k_cache, v_cache, cu_seqlens_q, block_tables, softmax_scale, seqlens_kv, mask)
+            return super().forward(query, key_cache, value_cache, cu_seqlens_q, block_tables, softmax_scale, seqlens_kv, mask)
 
         if softmax_scale is None:
             softmax_scale = head_dim**-0.5
@@ -90,8 +88,8 @@ class TorchNpuPagedPrefillGQA(MojoPagedPrefillGQA, default_priority=0):
         compress_mask = torch.triu(torch.ones((2048, 2048), dtype=torch.bool, device=query.device), diagonal=1)
         out, _ = torch_npu.npu_fused_infer_attention_score(
             query=query,
-            key=k_cache,
-            value=v_cache,
+            key=key_cache,
+            value=value_cache,
             atten_mask=compress_mask,
             block_table=block_tables.to(torch.int32),
             input_layout="TND",

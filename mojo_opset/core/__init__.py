@@ -28,6 +28,9 @@ from .operators.attention import MojoPrefillGQA
 from .operators.attention import MojoPrefillMLA
 from .operators.attention import MojoPrefillNSA
 from .operators.attention import MojoSdpa
+from .operators.attention import MojoPagedPrefillSWA
+from .operators.attention import MojoPagedDecodeSWA
+from .operators.attention import MojoSWA
 
 """ kvcache """
 from .operators.kv_cache import MojoStoreMLAKVCache
@@ -35,14 +38,17 @@ from .operators.kv_cache import MojoStorePagedKVCache
 from .operators.kv_cache import MojoStorePagedMLAKVCache
 
 """ linear """
-from .operators.gemm import MojoAllGatherGemm
-from .operators.gemm import MojoGemmAll2All
-from .operators.gemm import MojoGemmAllReduce
-from .operators.gemm import MojoGemmReduceScatter
+from .operators.gemm import MojoGemmDequant
 from .operators.gemm import MojoGroupGemm
 from .operators.gemm import MojoQuantGroupLinearReduceSum
 from .operators.gemm import MojoGroupGemm as MojoGroupLinear
 from .operators.linear import MojoLinear
+
+""" compute + comm """
+from .operators.compute_with_comm import MojoAllGatherGemm
+from .operators.compute_with_comm import MojoGemmAll2All
+from .operators.compute_with_comm import MojoGemmAllReduce
+from .operators.compute_with_comm import MojoGemmReduceScatter
 
 """ matmul """
 # Aliases for backward compatibility
@@ -67,14 +73,18 @@ from .operators.moe import MojoMoEDispatch
 from .operators.moe import MojoMoEGating
 
 """ normalization """
-from .operators.normalization import MojoLayerNorm
-from .operators.normalization import MojoNormQuant
-from .operators.normalization import MojoResidualAddLayerNorm
-from .operators.normalization import MojoResidualAddNormCast
-from .operators.normalization import MojoResidualAddNormQuant
-from .operators.normalization import MojoResidualAddRMSNorm
-from .operators.normalization import MojoRMSNorm
 from .operators.normalization import MojoChannelRMSNorm
+from .operators.normalization import MojoLayerNorm
+from .operators.normalization import MojoLayerNormQuant
+from .operators.normalization import MojoResidualAddLayerNorm
+from .operators.normalization import MojoResidualAddLayerNormQuant
+from .operators.normalization import MojoResidualAddNormCast
+from .operators.normalization import MojoResidualAddRMSNorm
+from .operators.normalization import MojoResidualAddRMSNormQuant
+from .operators.normalization import MojoRMSNorm
+from .operators.normalization import MojoRMSNormQuant
+from .operators.normalization import MojoGroupRMSNorm
+from .operators.normalization import MojoGroupLayerNorm
 
 """ position_embedding """
 from .operators.position_embedding import MojoNormRoPE
@@ -104,6 +114,7 @@ from .functions.loss_function import MojoFusedLinearCrossEntropyFunction
 from .functions.loss_function import MojoFusedLinearCrossEntropyLoss
 from .functions.normalization import MojoRMSNormFunction
 from .functions.position_embedding import MojoRoPEFunction
+from .functions.attention import MojoSWAFunction
 
 # fmt: off
 __all__ = [
@@ -130,18 +141,22 @@ __all__ = [
     "MojoDecodeNSA",
     "MojoPagedDecodeNSA",
     "MojoSdpa",
+    "MojoPagedPrefillSWA",
+    "MojoPagedDecodeSWA",
+    "MojoSWA",
 
     "MojoStorePagedKVCache",
     "MojoStoreMLAKVCache",
     "MojoStorePagedMLAKVCache",
 
     "MojoLinear",
+    "MojoGemmDequant",
     "MojoGroupGemm",
-    "MojoGemmAllReduce",
-    "MojoGemmAll2All",
-    "MojoAllGatherGemm",
-    "MojoGemmReduceScatter",
     "MojoQuantGroupLinearReduceSum",
+    "MojoAllGatherGemm",
+    "MojoGemmAll2All",
+    "MojoGemmAllReduce",
+    "MojoGemmReduceScatter",
 
     "MojoQuant",
     "MojoDequant",
@@ -157,11 +172,15 @@ __all__ = [
 
     "MojoLayerNorm",
     "MojoRMSNorm",
+    "MojoGroupLayerNorm",
+    "MojoGroupRMSNorm",
     "MojoChannelRMSNorm",
+    "MojoRMSNormQuant",
+    "MojoLayerNormQuant",
     "MojoResidualAddRMSNorm",
     "MojoResidualAddLayerNorm",
-    "MojoNormQuant",
-    "MojoResidualAddNormQuant",
+    "MojoResidualAddRMSNormQuant",
+    "MojoResidualAddLayerNormQuant",
     "MojoResidualAddNormCast",
 
     "MojoRoPE",
@@ -188,5 +207,7 @@ __all__ = [
     "MojoCausalConv1dFunction",
 
     "MojoFusedLinearCrossEntropyLoss",
+
+    "MojoSWAFunction",
 ]
 # fmt: on

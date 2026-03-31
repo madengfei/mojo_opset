@@ -5,7 +5,7 @@ from tests.utils import bypass_not_implemented
 
 from mojo_opset import MojoRoPE
 from mojo_opset import MojoGridRoPE
-from mojo_opset.utils.platform import get_torch_device_type
+from mojo_opset.utils.platform import get_platform, get_torch_device
 
 torch.random.manual_seed(42)
 
@@ -36,7 +36,8 @@ torch.random.manual_seed(42)
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @bypass_not_implemented
 def test_pos_emb(bs, seqlen, q_heads, k_heads, head_dim, rope_percentage, mode, dtype):
-    device = get_torch_device_type()
+    platform = get_platform()
+    device = get_torch_device()
     max_seq_len = 32768
 
     rope_dim = int(head_dim * rope_percentage)
@@ -85,8 +86,8 @@ def test_pos_emb(bs, seqlen, q_heads, k_heads, head_dim, rope_percentage, mode, 
     rope_ref = MojoRoPE._registry.get("torch")()
 
     if (
-        device == "npu"
-         and mode == "padding_prefill"
+        platform == "npu"
+        and mode == "padding_prefill"
         and rope_percentage == 0.375
     ):
         pytest.skip("Skipped on NPU due to RotaryPositionEmbedding fusion operator limitation: D is not aligned")
@@ -117,7 +118,7 @@ def test_pos_emb(bs, seqlen, q_heads, k_heads, head_dim, rope_percentage, mode, 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 @bypass_not_implemented
 def test_grid_pos_emb(bs, grid, heads, head_dim, pad, dtype):
-    device = get_torch_device_type()
+    device = get_torch_device()
     f, h, w = grid
     seq_len = f * h * w
     L = seq_len + pad

@@ -21,7 +21,7 @@ except Exception:
     torch_npu = None
 
 from mojo_opset.utils.logging import get_logger
-from mojo_opset.utils.platform import get_platform, get_torch_device_type
+from mojo_opset.utils.platform import get_platform, get_torch_device
 
 logger = get_logger(__name__)
 
@@ -235,7 +235,7 @@ def auto_switch_platform(set_perf: bool = False):
         Callable: The decorated function.
     """
     # device = get_platform()
-    device = get_torch_device_type()
+    device = get_torch_device()
 
     if set_perf:
         if device == "npu":
@@ -276,8 +276,8 @@ def bypass_not_implemented(func: Callable) -> Callable:
     def wrapper(*args, **kwargs):
         try:
             return func(*args, **kwargs)
-        except NotImplementedError:
-            pytest.skip("Not implemented on this backend, skipped.")
+        except NotImplementedError as e:
+            pytest.skip(str(e) or "Not implemented on this backend, skipped.")
             return None
 
     return wrapper

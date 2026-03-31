@@ -42,13 +42,10 @@ def ilu_grid_dim_from_row_tasks(n_row_tasks: int) -> int:
 # @lru_cache(maxsize=1)
 # def get_num_cores(op_type="vector"):
 #     assert op_type in ["vector", "cube", "mix"], f"op_type {op_type} must in ['vector', 'cube', 'mix']."
-#     props = triton.runtime.driver.active.utils.get_device_properties("iluvatar")
-#     if op_type == "vector":
-#         return props["num_vectorcore"]
-#     # ILU 驱动若未暴露 cube 核数，与 NPU 的 num_aicore 对齐语义时回退到 vectorcore
-#     return int(props.get("num_aicore") or props["num_vectorcore"])
+#     return (
+#         triton.runtime.driver.active.utils.get_device_properties("ilu")["num_vectorcore"]
+#         if op_type == "vector"
+#         else triton.runtime.driver.active.utils.get_device_properties("npu")["num_aicore"]
+#     )
 
-exp = tl.exp
-exp2 = tl.math.exp2
-log = tl.log
-log2 = tl.log2
+

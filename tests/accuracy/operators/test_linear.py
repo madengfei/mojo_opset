@@ -6,7 +6,7 @@ import torch
 from tests.utils import bypass_not_implemented
 from tests.utils import get_platform
 from tests.utils import auto_switch_platform
-from tests.utils import get_torch_device_type
+from tests.utils import get_torch_device
 
 from mojo_opset import MojoGroupLinear
 from mojo_opset import MojoQuantGroupLinearReduceSum
@@ -201,7 +201,7 @@ _test_grouped_matmul_cases = [
 @bypass_not_implemented
 def test_grouped_matmul_cases_via_group_linear(inputs, weights, bias, dtype):
     platform = get_platform()
-    device = get_torch_device_type()
+    device = get_torch_device()
     if platform == "npu" and dtype == torch.float32:
         pytest.skip("NPU grouped matmul does not support float32")
 
@@ -233,7 +233,7 @@ def test_grouped_matmul_cases_via_group_linear(inputs, weights, bias, dtype):
 @auto_switch_platform()
 @bypass_not_implemented
 def test_group_linear_two_groups_single_call(dtype, trans_weight):
-    device = get_torch_device_type()
+    device = get_torch_device()
 
     m0, m1 = 64, 128
     k, n = 128, 96
