@@ -74,7 +74,9 @@ def test_moe(input_hidden, gating_weight, up_proj_weight, down_proj_weight, num_
         for expert_idx in range(num_experts):
             top_x, idx = torch.where(expert_mask[expert_idx])
             current_state = input_hidden[idx]
-            current_intermediate = torch.nn.functional.linear(current_state, up_proj_weight[expert_idx].float())
+            current_intermediate = torch.nn.functional.linear(
+                current_state.float(), up_proj_weight[expert_idx].float()
+            )
             if activation == "swiglu":
                 current_intermediate = torch.nn.functional.silu(current_intermediate[:, :intermediate_size]) * current_intermediate[:, intermediate_size:]
             else:
