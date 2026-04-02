@@ -6,8 +6,6 @@ from typing import Union
 
 import torch
 
-from mojo_opset.utils.platform import get_platform
-
 from ..operator import MojoOperator
 
 
@@ -119,16 +117,6 @@ class MojoTopPSampling(MojoOperator):
             - Masks filtered logits with `filter_value` (typically `-inf`) before softmax.
             - Sampling uses `torch.multinomial` over the filtered probability distribution.
         """
-        if get_platform() == "ilu":
-            from mojo_opset.backends.ttx.kernels import top_p_sampling_impl
-
-            return top_p_sampling_impl(
-                logits,
-                self.top_p,
-                self.filter_value,
-                self.min_tokens_to_keep,
-                self.rand_top_k,
-            )
         logits = logits.to(torch.float32)
         top_k = min(self.rand_top_k, logits.size(-1))
         sorted_topk_logits, sorted_topk_indices = torch.topk(logits, top_k)
@@ -197,16 +185,6 @@ class MojoTopPFilter(MojoOperator):
             - Ensures at least `min_tokens_to_keep` tokens remain by clearing masks on lowest positions.
             - Masks filtered logits with `self.filter_value` before softmax.
         """
-        if get_platform() == "ilu":
-            from mojo_opset.backends.ttx.kernels import top_p_filter_impl
-
-            return top_p_filter_impl(
-                logits,
-                top_p,
-                self.filter_value,
-                min_tokens_to_keep,
-                rand_top_k,
-            )
         dtype = logits.dtype
         logits = logits.to(torch.float32)
         top_k = min(rand_top_k, logits.size(-1))
@@ -255,10 +233,6 @@ class MojoRejectSampling(MojoOperator):
             - Appends a sentinel "always accept" at the end to trigger fallback when all are rejected.
             - The final fallback token content is not sampled here; caller should fill it externally.
         """
-        if get_platform() == "ilu":
-            from mojo_opset.backends.ttx.kernels import reject_sampling_impl
-
-            return reject_sampling_impl(target_probs, draft_tokens, draft_probs, random_seed)
         device = target_probs.device
         batch_size, _, _ = target_probs.shape
         spec_step = draft_probs.shape[1]
@@ -306,10 +280,6 @@ class MojoJoinProbRejectSampling(MojoOperator):
               accepts prefix length by comparing cumprod(r_i) against cumprod of U(0,1).
             - Appends a sentinel token slot; caller should fill the final token if fallback is needed.
         """
-        if get_platform() == "ilu":
-            from mojo_opset.backends.ttx.kernels import join_prob_reject_sampling_impl
-
-            return join_prob_reject_sampling_impl(target_probs, draft_tokens, draft_probs, random_seed)
         batch_size, _, _ = target_probs.shape
         spec_step = draft_probs.shape[1]
 
@@ -369,22 +339,6 @@ class MojoApplyPenaltiesTempurate(MojoOperator):
             - All penalty lists must have length B (batch size).
             - Frequency tensors are moved to `logits.device` (non-blocking where supported).
         """
-        if get_platform() == "ilu":
-            from mojo_opset.backends.ttx.kernels import fused_penalties_temp_impl
-
-            dtype = logits.dtype
-            t = temps
-            if t is not None and len(t) == 0:
-                t = None
-            out = fused_penalties_temp_impl(
-                logits.to(torch.float32),
-                token_freqs,
-                frequency_penalties,
-                presence_penalties,
-                repetition_penalties,
-                t,
-            )
-            return out.to(dtype)
         dtype = logits.dtype
         logits = logits.to(torch.float32)
 

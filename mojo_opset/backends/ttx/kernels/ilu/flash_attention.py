@@ -1,6 +1,23 @@
 """
 ILU: paged prefill GQA — KV gather + GQA expand in PyTorch; causal attention in Triton.
 Aligned with MojoPagedPrefillGQA (mask j <= i + (kv_seq_len - q_seq_len)).
+
+Paged decode (``paged_attention_decode_impl`` / ``paged_decode_kernel``)
+------------------------------------------------------------------------
+Host and kernel impose the following; callers must satisfy them or the launch will fail:
+
+* **KV block size upper bound**: ``block_size`` (the sequence-length slot count per physical
+  KV cache block, i.e. ``key_cache.shape[2]``) is asserted **≤ 128**. This matches the
+  current Triton row-tile limit for the decode path (temporary restriction; message may
+  say ``temp:``).
+
+* **Page size equals Triton N tile**: ``paged_decode_kernel`` passes ``PAGE_SIZE`` and
+  ``BLOCK_SIZE_N`` both from the same ``block_size`` and enforces
+  ``tl.static_assert(PAGE_SIZE == BLOCK_SIZE_N)``. So the **paged KV page size** used in
+  the kernel must be exactly the **block_ptr row tile** along the sequence axis — one
+  logical page per ``make_block_ptr`` tile. Do not mix a different nominal page size with
+  a different ``BLOCK_SIZE_N``.
+
 """
 
 import math
@@ -195,12 +212,17 @@ def paged_attention_prefill_impl(
             v_unpadded[start_pos_in_seq:end_pos_in_seq, :, :] = v_slice.permute(1, 0, 2)
 
         if num_q_heads != num_kv_heads:
+            g = num_q_heads // num_kv_heads
+            # repeat: head dim becomes [kv_0..kv_{K-1}] tiled g times → aligns with decode
+            #   kv_head_id = q_head_id % num_kv_heads when gqa_interleave / GQA_INTERLEAVE.
+            # repeat_interleave: each kv head repeated g times in order → aligns with
+            #   kv_head_id = q_head_id // g when not interleaved. See module docstring.
             if gqa_interleave:
-                k_expanded = k_unpadded.repeat((1, num_q_heads // num_kv_heads, 1))
-                v_expanded = v_unpadded.repeat((1, num_q_heads // num_kv_heads, 1))
+                k_expanded = k_unpadded.repeat((1, g, 1))
+                v_expanded = v_unpadded.repeat((1, g, 1))
             else:
-                k_expanded = k_unpadded.repeat_interleave(num_q_heads // num_kv_heads, dim=1)
-                v_expanded = v_unpadded.repeat_interleave(num_q_heads // num_kv_heads, dim=1)
+                k_expanded = k_unpadded.repeat_interleave(g, dim=1)
+                v_expanded = v_unpadded.repeat_interleave(g, dim=1)
         else:
             k_expanded = k_unpadded
             v_expanded = v_unpadded
@@ -261,6 +283,7 @@ def paged_decode_kernel(
     for q_task_id in tl.range(pid, num_tasks, n_progs):
         q_head_id = q_task_id % NUM_Q_HEADS
         b_id = q_task_id // NUM_Q_HEADS
+        # Matches paged_attention_prefill_impl: interleave → % ; grouped → //
         if GQA_INTERLEAVE:
             kv_head_id = q_head_id % NUM_KV_HEADS
         else:
@@ -278,6 +301,7 @@ def paged_decode_kernel(
 
         num_logical_blocks = tl.cdiv(kv_seq_len, PAGE_SIZE)
 
+        # PAGE_SIZE and BLOCK_SIZE_N are both host `block_size`; see module docstring.
         tl.static_assert(PAGE_SIZE == BLOCK_SIZE_N, "PAGE_SIZE should be equal to BLOCK_SIZE_N")
 
         for logical_block_idx in tl.range(0, num_logical_blocks):
@@ -349,6 +373,14 @@ def paged_attention_decode_impl(
     gqa_interleave: bool,
     softmax_scale: Optional[float] = None,
 ) -> torch.Tensor:
+    """Paged KV decode attention (one query step per batch row).
+
+    Requirements (see module docstring):
+
+    * ``key_cache`` / ``value_cache`` block length ``block_size`` (dim 2) must be **≤ 128**.
+    * That same ``block_size`` is ``PAGE_SIZE`` and ``BLOCK_SIZE_N`` in ``paged_decode_kernel``;
+      the kernel statically asserts ``PAGE_SIZE == BLOCK_SIZE_N``.
+    """
     batch_size, num_q_heads, head_dim = q.shape
     num_total_blocks, num_kv_heads, block_size, head_dim_cache = key_cache.shape
 
