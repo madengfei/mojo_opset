@@ -46,26 +46,6 @@ class MojoStorePagedKVCache(MojoOperator):
             "key/value states must be (token_num, kv_head_num, head_dim), please check."
         )
 
-        # Prefer ILU Triton kernel path for paged KV cache writes.
-        try:
-            from mojo_opset.utils.platform import get_platform
-
-            if get_platform() == "ilu":
-                from mojo_opset.backends.ttx.kernels import store_paged_kv
-
-                return store_paged_kv(
-                    key_states,
-                    value_states,
-                    key_cache,
-                    value_cache,
-                    block_table,
-                    cu_seq_lens,
-                    kv_lens,
-                )
-        except Exception:
-            # Fall back to the Python reference path if backend kernel is unavailable.
-            pass
-
         block_size = key_cache.shape[2]
 
         num_batches = len(kv_lens) if kv_lens is not None else 0

@@ -85,7 +85,7 @@ def causal_conv1d_update_bdt_impl(
     weight: torch.Tensor,
     bias: Optional[torch.Tensor] = None,
     activation: Optional[str] = None,
-    conv_state_indices: Optional[str] = None,
+    conv_state_indices: Optional[torch.Tensor] = None,
 ):
     del conv_state_indices
 

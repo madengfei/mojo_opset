@@ -96,13 +96,17 @@ def quant_group_linear_reduce_sum_impl(
     if b != b2 or k != k2:
         raise ValueError("x and w batch/K dimensions must match")
 
-    out_acc = torch.zeros((m, n), device=x.device, dtype=torch.float32)
+    # Match MojoQuantGroupLinearReduceSum reference: per-batch fp32 tile, cast to bf16,
+    # then in-place bf16 accumulation (not fp32 sum then one cast).
+    reduced_out = torch.zeros((m, n), device=x.device, dtype=torch.bfloat16)
+    batch_contrib = torch.zeros((m, n), device=x.device, dtype=torch.float32)
 
     BLOCK_M = 32
     BLOCK_N = 32
     grid = (triton.cdiv(m, BLOCK_M) * triton.cdiv(n, BLOCK_N),)
 
     for batch_idx in range(b):
+        batch_contrib.zero_()
         x_b = x[batch_idx]
         w_b = w[batch_idx]
         s1_b = x1_scale[batch_idx]
@@ -111,7 +115,7 @@ def quant_group_linear_reduce_sum_impl(
             w_b,
             s1_b,
             x2_scale,
-            out_acc,
+            batch_contrib,
             m,
             n,
             k,
@@ -121,10 +125,11 @@ def quant_group_linear_reduce_sum_impl(
             w_b.stride(1),
             s1_b.stride(0),
             x2_scale.stride(0),
-            out_acc.stride(0),
-            out_acc.stride(1),
+            batch_contrib.stride(0),
+            batch_contrib.stride(1),
             BLOCK_M=BLOCK_M,
             BLOCK_N=BLOCK_N,
         )
+        reduced_out += batch_contrib.to(torch.bfloat16)
 
-    return out_acc.to(torch.bfloat16)
+    return reduced_out

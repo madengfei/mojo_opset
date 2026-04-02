@@ -57,27 +57,6 @@ class MojoGroupGemm(MojoOperator):
         assert bk == k, "K of input should be equal to K of self.weight."
         assert num_groups_w == num_groups
 
-        from mojo_opset.utils.platform import get_platform
-
-        if get_platform() == "ilu":
-            from mojo_opset.backends.ttx.kernels import m_grouped_matmul
-
-            out = input.new_empty(m, n)
-            m_grouped_matmul(
-                input,
-                self.weight,
-                out,
-                group_list,
-                num_groups,
-                m,
-                n,
-                k,
-                strideBN,
-                strideBK,
-                not self.trans_weight,
-            )
-            return out
-
         if self.trans_weight:
             weight = self.weight.transpose(1, 2).contiguous()
         else:
@@ -224,18 +203,6 @@ class MojoQuantGroupLinearReduceSum(MojoOperator):
         b_w, k_w, n = weight.shape
         assert b == b_w, "input and weight must have same batch size"
         assert k == k_w, "K of input should be equal to K of weight"
-
-        from mojo_opset.utils.platform import get_platform
-
-        if get_platform() == "ilu":
-            from mojo_opset.backends.ttx.kernels import quant_group_linear_reduce_sum_impl
-
-            return quant_group_linear_reduce_sum_impl(
-                input.contiguous(),
-                weight.contiguous(),
-                x1_scale,
-                x2_scale,
-            )
 
         if x2_scale.dtype != torch.bfloat16:
             x2_scale = x2_scale.to(torch.bfloat16)

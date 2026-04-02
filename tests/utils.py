@@ -15,11 +15,6 @@ from typing import Union
 import pytest
 import torch
 
-try:
-    import torch_npu
-except Exception:
-    torch_npu = None
-
 from mojo_opset.utils.logging import get_logger
 from mojo_opset.utils.platform import get_platform, get_torch_device
 
@@ -234,7 +229,6 @@ def auto_switch_platform(set_perf: bool = False):
     Returns:
         Callable: The decorated function.
     """
-    # device = get_platform()
     device = get_torch_device()
 
     if set_perf:
