@@ -13,6 +13,7 @@ from .operator import MojoOperator
 from .operators.activation import MojoGelu
 from .operators.activation import MojoSilu
 from .operators.activation import MojoSwiGLU
+from .operators.activation import MojoRotateActivation
 
 """ attention """
 from .operators.attention import MojoDecodeGQA
@@ -63,14 +64,23 @@ from .operators.embedding import MojoParallelEmbedding
 from .operators.embedding import MojoRelativeEmbedding
 
 """ quantize """
+from .operators.quantize import MojoDequantSwiGLUQuant
 from .operators.quantize import MojoDequant
+from .operators.quantize import MojoDynamicQuant
 from .operators.quantize import MojoQuant
 
 """ moe """
 from .operators.moe import MojoMoE
 from .operators.moe import MojoMoECombine
 from .operators.moe import MojoMoEDispatch
+from .operators.moe import MojoMoEInitRoutingDynamicQuant
 from .operators.moe import MojoMoEGating
+from .operators.moe import MojoFusedSwiGLUMoEScaleDynamicQuantize
+from .operators.moe import MojoGroupQuantGemmA8W4MSD
+from .operators.moe import MojoGroupQuantGemmCombineA8W4MSD
+from .operators.moe import MojoGroupQuantGemmCombineMoE
+from .operators.moe import MojoGroupQuantGemmMoE
+from .operators.moe import MojoGroupedMatmulA8W4MSD
 
 """ normalization """
 from .operators.normalization import MojoChannelRMSNorm
@@ -107,6 +117,9 @@ from .operators.convolution import MojoCausalConv1dUpdateState
 """ mlp"""
 from .operators.mlp import MojoSwiGLUMLP
 
+""" indexer """
+from .operators.indexer import MojoLightningIndexer
+
 """ functions """
 from .functions.activation import MojoSiluFunction
 from .functions.convolution import MojoCausalConv1dFunction
@@ -127,6 +140,7 @@ __all__ = [
     "MojoGroupQuantMatmulReduceSum",
     "MojoSilu",
     "MojoSwiGLU",
+    "MojoRotateActivation",
 
     "MojoPrefillGQA",
     "MojoPagedPrefillGQA",
@@ -160,6 +174,8 @@ __all__ = [
 
     "MojoQuant",
     "MojoDequant",
+    "MojoDynamicQuant",
+    "MojoDequantSwiGLUQuant",
 
     "MojoEmbedding",
     "MojoParallelEmbedding",
@@ -169,6 +185,13 @@ __all__ = [
     "MojoMoEGating",
     "MojoMoEDispatch",
     "MojoMoECombine",
+    "MojoMoEInitRoutingDynamicQuant",
+    "MojoFusedSwiGLUMoEScaleDynamicQuantize",
+    "MojoGroupQuantGemmMoE",
+    "MojoGroupQuantGemmCombineMoE",
+    "MojoGroupQuantGemmA8W4MSD",
+    "MojoGroupQuantGemmCombineA8W4MSD",
+    "MojoGroupedMatmulA8W4MSD",
 
     "MojoLayerNorm",
     "MojoRMSNorm",
@@ -205,6 +228,8 @@ __all__ = [
     "MojoRoPEFunction",
     "MojoFusedLinearCrossEntropyFunction",
     "MojoCausalConv1dFunction",
+
+    "MojoLightningIndexer",
 
     "MojoFusedLinearCrossEntropyLoss",
 

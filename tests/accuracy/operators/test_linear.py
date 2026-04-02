@@ -11,6 +11,8 @@ from tests.utils import get_torch_device
 from mojo_opset import MojoGroupLinear
 from mojo_opset import MojoQuantGroupLinearReduceSum
 
+_SKIP_NPU_QUANT_GROUP_LINEAR = get_platform() == "npu"
+
 
 def generate_random_list(length, total_sum):
     avg = total_sum // length
@@ -159,7 +161,7 @@ def test_group_gemm(input, weight, group_list, trans_weight):
         ),
     ],
 )
-@pytest.mark.skipif(get_platform() == "npu", reason="Skipped on NPU due to CANN 8.2 issue")
+@pytest.mark.skipif(_SKIP_NPU_QUANT_GROUP_LINEAR, reason="Skipped on NPU due to CANN 8.2 issue")
 @auto_switch_platform()
 @bypass_not_implemented
 def test_quant_group_linear_reduce_sum(x1, weight, x1_scale, x2_scale, trans_weight, atol, rtol):
@@ -200,11 +202,10 @@ _test_grouped_matmul_cases = [
 @auto_switch_platform()
 @bypass_not_implemented
 def test_grouped_matmul_cases_via_group_linear(inputs, weights, bias, dtype):
-    platform = get_platform()
-    device = get_torch_device()
-    if platform == "npu" and dtype == torch.float32:
+    if get_platform() == "npu" and dtype == torch.float32:
         pytest.skip("NPU grouped matmul does not support float32")
 
+    device = get_torch_device()
     input_tensors = [t.to(device=device) for t in inputs]
     weight_tensors = [t.to(device=device) for t in weights]
 
