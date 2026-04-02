@@ -4,12 +4,10 @@ import torch
 import triton
 import triton.language as tl
 
-from .utils import VEC_ALIGN_BYTES
 from .utils import _block_size_n_pow2
 from .utils import ilu_grid_dim_from_row_tasks
 from .utils import libentry
 from .utils import rms_norm_fwd_heuristics
-from mojo_opset.backends.ttx.kernels.utils import align
 from mojo_opset.backends.ttx.kernels.utils import torch_to_triton_dtype
 
 

@@ -15,9 +15,26 @@
 #
 # Same algorithm as NPU store_lowrank; grid[0] = ceil(n / BLOCK) programs.
 
+import os
+
 import torch
 import triton
 import triton.language as tl
+
+
+def _store_label_cache_max_batch_bytes() -> int:
+    """Upper bound on estimated per-program tensor footprint (see ``store_label_cache_infer_impl``).
+
+    Compared against ``BLOCK * head_num * head_dim * element_size()`` (bytes). Not read from
+    hardware; override with env ``MOJO_STORE_LABEL_CACHE_MAX_BATCH_BYTES`` if needed.
+    """
+    raw = os.environ.get("MOJO_STORE_LABEL_CACHE_MAX_BATCH_BYTES")
+    if raw is not None:
+        try:
+            return max(1, int(raw, 10))
+        except ValueError:
+            pass
+    return 192
 
 
 @triton.jit
@@ -78,6 +95,12 @@ def store_label_cache_infer_impl(
 
     Returns:
         label_cache (updated in place)
+
+    Heuristic:
+        ``BLOCK`` is chosen so that ``BLOCK * head_num * head_dim * element_size`` (bytes) does
+        not exceed a tunable bound (default ``192`` bytes via ``_store_label_cache_max_batch_bytes``).
+        This is not derived from on-chip memory queries; set ``MOJO_STORE_LABEL_CACHE_MAX_BATCH_BYTES``
+        to override.
     """
     block_num, head_num, block_size, head_dim = label_cache.shape
     assert label_cache.dtype == key_lr.dtype, "label_cache and key_lr must have the same dtype"
@@ -86,14 +109,15 @@ def store_label_cache_infer_impl(
     if n == 0:
         return label_cache
 
-    ub_buffer = 192
+    max_batch_bytes = _store_label_cache_max_batch_bytes()
 
     # Initial tokens per program: ceil(n / K); keeps launch width ~O(K) without querying the device.
     TARGET_PROGRAMS = 256
     BLOCK = triton.cdiv(n, TARGET_PROGRAMS)
 
+    # Rough per-program working-set estimate (bytes); if too large, cap BLOCK to reduce tile pressure.
     batch_data_size = BLOCK * head_num * head_dim * key_lr.element_size()
-    if batch_data_size > ub_buffer:
+    if batch_data_size > max_batch_bytes:
         BLOCK = 16
     BLOCK = max(16, BLOCK)
     grid = (triton.cdiv(n, BLOCK),)
