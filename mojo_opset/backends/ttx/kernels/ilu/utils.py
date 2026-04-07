@@ -1,5 +1,3 @@
-from functools import lru_cache
-
 import triton
 import triton.language as tl
 
