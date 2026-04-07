@@ -31,8 +31,10 @@ class TorchNpuApplyRoPE(MojoApplyRoPE, default_priority=0):
             q_rope = q_rope.unsqueeze(0)
             k_rope = k_rope.unsqueeze(0)
             
-        cos = cos.unsqueeze(0)
-        sin = sin.unsqueeze(0)
+        # npu_rotary_mul requires cos/sin to be 4D
+        if cos.dim() < 4:
+            cos = cos.unsqueeze(0)
+            sin = sin.unsqueeze(0)
 
         q_rot = torch_npu.npu_rotary_mul(q_rope, cos, sin)
         k_rot = torch_npu.npu_rotary_mul(k_rope, cos, sin)
