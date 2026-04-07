@@ -4,9 +4,18 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from tests.utils import auto_switch_platform, bypass_not_implemented, get_platform
+from mojo_opset import MojoGemmDequant, MojoGroupLinear, MojoLinear, MojoQuantGroupLinearReduceSum
+from mojo_opset.utils.platform import get_platform
+from mojo_opset.utils.platform import get_torch_device
 
-from mojo_opset import MojoGemmDequant, MojoLinear, MojoGroupLinear, MojoQuantGroupLinearReduceSum
+from tests.utils import auto_switch_platform, bypass_not_implemented
+
+
+def _torch_device_for_tests() -> str:
+    """PyTorch-accepted device string (Iluvatar reports as platform `ilu` but uses CUDA tensors)."""
+    if get_platform() == "ilu":
+        return "cuda"
+    return get_torch_device()
 
 torch.manual_seed(42)
 
@@ -366,7 +375,7 @@ _test_grouped_matmul_cases = [
 @auto_switch_platform()
 @bypass_not_implemented
 def test_grouped_matmul_cases_via_group_linear(inputs, weights, bias, dtype):
-    device = get_platform()
+    device = _torch_device_for_tests()
     if device == "npu" and dtype == torch.float32:
         pytest.skip("NPU grouped matmul does not support float32")
 
@@ -398,7 +407,7 @@ def test_grouped_matmul_cases_via_group_linear(inputs, weights, bias, dtype):
 @auto_switch_platform()
 @bypass_not_implemented
 def test_group_linear_two_groups_single_call(dtype, trans_weight):
-    device = get_platform()
+    device = _torch_device_for_tests()
 
     m0, m1 = 64, 128
     k, n = 128, 96

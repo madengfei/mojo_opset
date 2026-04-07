@@ -8,7 +8,7 @@ from torch import nn
 from mojo_opset import MojoPagedDecodeGQA
 from mojo_opset import MojoPagedPrefillGQA
 from mojo_opset import MojoRMSNorm
-from mojo_opset import MojoRoPE
+from mojo_opset import MojoApplyRoPE
 from mojo_opset import MojoSilu
 from mojo_opset import MojoStorePagedKVCache
 
@@ -83,8 +83,8 @@ class PagedDummyCache:
     def update(self, key_states: torch.Tensor, value_states: torch.Tensor, layer_idx: int):
         batch_size, head_num, new_seq_len, head_dim = key_states.shape
 
-        key_states = key_states.permute(0, 2, 1, 3).reshape(-1, head_num, head_dim)
-        value_states = value_states.permute(0, 2, 1, 3).reshape(-1, head_num, head_dim)
+        key_states = key_states.permute(0, 2, 1, 3).reshape(-1, head_num, head_dim).contiguous()
+        value_states = value_states.permute(0, 2, 1, 3).reshape(-1, head_num, head_dim).contiguous()
         cu_seqlens = torch.arange(0, (batch_size + 1) * new_seq_len, step=new_seq_len, device=key_states.device)
 
         current_seq_lens = self.seq_lens[layer_idx]
@@ -199,7 +199,7 @@ class Qwen3Attention(nn.Module):
             norm_size=self.head_dim,
             eps=config.rms_norm_eps,
         )
-        self.rope = MojoRoPE()
+        self.rope = MojoApplyRoPE()
         self.attn_prefill = MojoPagedPrefillGQA()
         self.attn_decode = MojoPagedDecodeGQA()
 

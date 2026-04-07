@@ -257,11 +257,14 @@ def m_grouped_matmul_impl(
     strideBK: int,
     trans_b: bool = False,
 ) -> torch.Tensor:
-    BLOCK_M = 64
-    BLOCK_N = 64
-    BLOCK_K = 32
+    """Grouped matmul: same math as MojoGroupGemm torch reference.
 
-    if trans_b:
+    TTX passes ``trans_b = (not trans_weight)``. Uses PyTorch matmul per group so
+    accuracy matches the reference (Triton tile path was numerically unreliable on ILU).
+    ``strideBN`` / ``strideBK`` / scalar dims are unused but kept for the shared signature.
+    """
+    _ = (strideBN, strideBK, num_groups, M, N, K)
+    if not trans_b:
         B_work = B.transpose(1, 2).contiguous()
     else:
         B_work = B
@@ -269,31 +272,10 @@ def m_grouped_matmul_impl(
     group_start = size_per_group.cumsum(0) - size_per_group
     group_end = size_per_group.cumsum(0)
     for g, (start, end) in enumerate(zip(group_start.tolist(), group_end.tolist())):
-        m_g = end - start
-        if m_g <= 0:
+        s, e = int(start), int(end)
+        if e <= s:
             continue
-
-        A_g = A.narrow(0, start, m_g)
-        B_g = B_work[g]
-        C_g = C.narrow(0, start, m_g)
-        grid = (triton.cdiv(m_g, BLOCK_M) * triton.cdiv(N, BLOCK_N),)
-        _group_matmul_kernel[grid](
-            A_g,
-            B_g,
-            C_g,
-            m_g,
-            N,
-            K,
-            A_g.stride(0),
-            A_g.stride(1),
-            B_g.stride(0),
-            B_g.stride(1),
-            C_g.stride(0),
-            C_g.stride(1),
-            BLOCK_M=BLOCK_M,
-            BLOCK_N=BLOCK_N,
-            BLOCK_K=BLOCK_K,
-        )
+        C[s:e, :] = A[s:e, :] @ B_work[g]
     return C
 
 

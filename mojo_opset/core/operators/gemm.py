@@ -74,7 +74,7 @@ class MojoGroupGemm(MojoOperator):
                 k,
                 strideBN,
                 strideBK,
-                self.trans_weight,
+                not self.trans_weight,
             )
             return out
 
@@ -225,12 +225,13 @@ class MojoQuantGroupLinearReduceSum(MojoOperator):
         assert b == b_w, "input and weight must have same batch size"
         assert k == k_w, "K of input should be equal to K of weight"
 
+        from importlib import import_module
+
         from mojo_opset.utils.platform import get_platform
 
         if get_platform() == "ilu":
-            from mojo_opset.backends.ttx.kernels import quant_group_linear_reduce_sum_impl
-
-            return quant_group_linear_reduce_sum_impl(
+            _kernels = import_module("mojo_opset.backends.ttx.kernels")
+            return _kernels.quant_group_linear_reduce_sum_impl(
                 input.contiguous(),
                 weight.contiguous(),
                 x1_scale,

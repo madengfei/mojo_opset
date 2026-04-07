@@ -3,13 +3,22 @@ import random
 import pytest
 import torch
 
-from tests.utils import bypass_not_implemented
-from tests.utils import get_platform
-from tests.utils import auto_switch_platform
-from tests.utils import get_torch_device
-
 from mojo_opset import MojoGroupLinear
 from mojo_opset import MojoQuantGroupLinearReduceSum
+from mojo_opset.utils.platform import get_platform
+from mojo_opset.utils.platform import get_torch_device
+
+from tests.utils import auto_switch_platform
+from tests.utils import bypass_not_implemented
+
+_SKIP_NPU_QUANT_GROUP_LINEAR = get_platform() == "npu"
+
+
+def _torch_device_for_tests() -> str:
+    """Return a PyTorch-accepted device string (Iluvatar is platform `ilu` but uses CUDA tensors)."""
+    if get_platform() == "ilu":
+        return "cuda"
+    return get_torch_device()
 
 
 def generate_random_list(length, total_sum):
@@ -159,7 +168,7 @@ def test_group_gemm(input, weight, group_list, trans_weight):
         ),
     ],
 )
-@pytest.mark.skipif(get_platform() == "npu", reason="Skipped on NPU due to CANN 8.2 issue")
+@pytest.mark.skipif(_SKIP_NPU_QUANT_GROUP_LINEAR, reason="Skipped on NPU due to CANN 8.2 issue")
 @auto_switch_platform()
 @bypass_not_implemented
 def test_quant_group_linear_reduce_sum(x1, weight, x1_scale, x2_scale, trans_weight, atol, rtol):
@@ -200,9 +209,8 @@ _test_grouped_matmul_cases = [
 @auto_switch_platform()
 @bypass_not_implemented
 def test_grouped_matmul_cases_via_group_linear(inputs, weights, bias, dtype):
-    platform = get_platform()
-    device = get_torch_device()
-    if platform == "npu" and dtype == torch.float32:
+    device = _torch_device_for_tests()
+    if device == "npu" and dtype == torch.float32:
         pytest.skip("NPU grouped matmul does not support float32")
 
     input_tensors = [t.to(device=device) for t in inputs]
@@ -233,7 +241,7 @@ def test_grouped_matmul_cases_via_group_linear(inputs, weights, bias, dtype):
 @auto_switch_platform()
 @bypass_not_implemented
 def test_group_linear_two_groups_single_call(dtype, trans_weight):
-    device = get_torch_device()
+    device = _torch_device_for_tests()
 
     m0, m1 = 64, 128
     k, n = 128, 96

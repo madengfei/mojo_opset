@@ -152,15 +152,15 @@ def paged_attention_prefill_impl(
     seqlens_kv: Optional[torch.Tensor],
     block_tables: torch.Tensor,
     gqa_interleave: bool,
-    sm_scale: Optional[float] = None,
+    softmax_scale: Optional[float] = None,
     aux_mask: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     del aux_mask
 
     total_q_tokens, num_q_heads, head_dim = q.shape
     _, num_kv_heads, block_size, _ = key_cache.shape
-    if sm_scale is None:
-        sm_scale = 1.0 / math.sqrt(head_dim)
+    if softmax_scale is None:
+        softmax_scale = 1.0 / math.sqrt(head_dim)
 
     outputs = torch.zeros(total_q_tokens, num_q_heads, head_dim, dtype=q.dtype, device=q.device)
 
@@ -208,7 +208,7 @@ def paged_attention_prefill_impl(
         k_expanded = k_expanded.contiguous()
         v_expanded = v_expanded.contiguous()
         out_slice = torch.empty_like(q_batch)
-        _launch_causal_attn_triton(q_batch, k_expanded, v_expanded, out_slice, sm_scale, q_seq_len, kv_seq_len)
+        _launch_causal_attn_triton(q_batch, k_expanded, v_expanded, out_slice, softmax_scale, q_seq_len, kv_seq_len)
         outputs[start_loc:end_loc] = out_slice
 
     return outputs
@@ -253,6 +253,7 @@ def paged_decode_kernel(
     OUT_T: tl.constexpr,
 ):
     tl.static_assert(HEAD_DIM <= BLOCK_SIZE_D, "HEAD_DIM should be less than BLOCK_SIZE_D")
+    tl.static_assert(PAGE_SIZE % BLOCK_SIZE_N == 0, "BLOCK_SIZE_N must be a divisor of PAGE_SIZE")
     pid = tl.program_id(0)
     n_progs = tl.num_programs(0)
 
@@ -276,18 +277,20 @@ def paged_decode_kernel(
         l_i = 0.0
         acc = tl.zeros((BLOCK_SIZE_D,), dtype=tl.float32)
 
-        num_logical_blocks = tl.cdiv(kv_seq_len, PAGE_SIZE)
+        num_kv_blocks = tl.cdiv(kv_seq_len, BLOCK_SIZE_N)
 
-        tl.static_assert(PAGE_SIZE == BLOCK_SIZE_N, "PAGE_SIZE should be equal to BLOCK_SIZE_N")
-
-        for logical_block_idx in tl.range(0, num_logical_blocks):
-            physical_block_id = tl.load(block_tables_ptr + b_id * stride_bt_batch + logical_block_idx * stride_bt_block)
-
-            kv_block_start_in_seq = logical_block_idx * PAGE_SIZE
-            kv_block_end_in_seq = tl.minimum(kv_block_start_in_seq + PAGE_SIZE, kv_seq_len)
+        for kv_block_id in range(0, num_kv_blocks):
+            kv_block_start_in_seq = kv_block_id * BLOCK_SIZE_N
+            kv_block_end_in_seq = min(kv_block_start_in_seq + BLOCK_SIZE_N, kv_seq_len)
             kv_block_len = kv_block_end_in_seq - kv_block_start_in_seq
+
+            logical_page_id = kv_block_start_in_seq // PAGE_SIZE
+            kv_block_start_in_page = kv_block_start_in_seq % PAGE_SIZE
+            physical_page_id = tl.load(block_tables_ptr + b_id * stride_bt_batch + logical_page_id * stride_bt_block)
+
             k_block_ptr = tl.make_block_ptr(
-                base=k_cache_ptr + physical_block_id * stride_k_block + kv_head_id * stride_k_head,
+                base=k_cache_ptr + physical_page_id * stride_k_block + kv_head_id * stride_k_head
+                + kv_block_start_in_page * stride_k_blksz,
                 shape=(kv_block_len, HEAD_DIM),
                 strides=(stride_k_blksz, stride_k_dim),
                 offsets=(0, 0),
@@ -295,7 +298,8 @@ def paged_decode_kernel(
                 order=(1, 0),
             )
             v_block_ptr = tl.make_block_ptr(
-                base=v_cache_ptr + physical_block_id * stride_v_block + kv_head_id * stride_v_head,
+                base=v_cache_ptr + physical_page_id * stride_v_block + kv_head_id * stride_v_head
+                + kv_block_start_in_page * stride_v_blksz,
                 shape=(kv_block_len, HEAD_DIM),
                 strides=(stride_v_blksz, stride_v_dim),
                 offsets=(0, 0),
@@ -347,23 +351,24 @@ def paged_attention_decode_impl(
     seqlens: torch.Tensor,
     block_tables: torch.Tensor,
     gqa_interleave: bool,
-    sm_scale: Optional[float] = None,
+    softmax_scale: Optional[float] = None,
 ) -> torch.Tensor:
     batch_size, num_q_heads, head_dim = q.shape
-    num_total_blocks, num_kv_heads, block_size, head_dim_cache = key_cache.shape
+    num_total_blocks, num_kv_heads, page_size, head_dim_cache = key_cache.shape
 
-    assert block_size <= 128, f"temp: only support block_size <= 128, but got {block_size}"
     max_num_blocks_per_seq = block_tables.shape[1]
 
     assert head_dim == head_dim_cache
-    if sm_scale is None:
-        sm_scale = 1.0 / math.sqrt(head_dim)
+    if softmax_scale is None:
+        softmax_scale = 1.0 / math.sqrt(head_dim)
 
     o = torch.empty_like(q)
 
     block = 256
     grid = (triton.cdiv(batch_size * num_q_heads, block),)
     block_size_d = triton.next_power_of_2(head_dim)
+    # Tile KV sequence in chunks of at most 128 tokens (same as NPU); page can be larger.
+    block_size_n = min(128, triton.next_power_of_2(page_size))
 
     if q.dtype == torch.float16:
         out_t = tl.float16
@@ -398,14 +403,14 @@ def paged_attention_decode_impl(
         o.stride(2),
         block_tables.stride(0),
         block_tables.stride(1),
-        sm_scale,
+        softmax_scale,
         num_q_heads,
         num_kv_heads,
         gqa_interleave,
         head_dim,
-        block_size,
+        page_size,
         BLOCK_SIZE_D=block_size_d,
-        BLOCK_SIZE_N=block_size,
+        BLOCK_SIZE_N=block_size_n,
         OUT_T=out_t,
     )
     return o
