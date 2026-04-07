@@ -21,6 +21,24 @@ ROPE_TOKEN_BLOCK_SIZE_TABLE = {
 }
 
 
+def _ilu_cos_batch_size(cos: torch.Tensor, q_like: torch.Tensor, *, is_varlen: bool) -> int:
+    """How many cos/sin rows exist along the batch-like leading dim for offset math in the kernel.
+
+    Padded prefill and varlen pass cos as ``[S, rope]`` or ``[T, rope]`` (2D); the reference
+    unsqueezes to ``[1, …, rope]`` so all logical batches share the same cos rows. Using
+    ``cos.shape[0]`` on 2D cos would wrongly treat sequence length as batch size (breaks bs>1).
+    Decode uses ``[B, rope]`` where ``cos.shape[0] == B``. Mirrors NPU ``cos_batch_stride = 0``
+    when ``cos.dim() != 3``.
+    """
+    if cos.dim() == 3:
+        return cos.shape[0]
+    if cos.dim() == 2:
+        if is_varlen or q_like.dim() == 4:
+            return 1
+        return cos.shape[0]
+    raise AssertionError(f"cos/sin must be 2D or 3D, got dim={cos.dim()} shape={tuple(cos.shape)}")
+
+
 def _get_token_block_size(n_qh: int, n_kh: int) -> int:
     assert n_qh <= 84 and n_kh <= 84, "don't support head_num > 84, please raise an issue."
 
@@ -378,14 +396,15 @@ def rope_fwd_impl(
     k: torch.Tensor,
     cos: torch.Tensor,
     sin: torch.Tensor,
+    head_first: bool = True,
     cu_seqlens: Optional[torch.Tensor] = None,
     kv_lens: Optional[torch.Tensor] = None,
-    head_first: bool = True,
-    rope_percentage: float = 1.0,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Same 5-arg prefix as NPU ``rope_fwd_impl``; optional ``cu_seqlens``/``kv_lens`` for varlen."""
     is_varlen = cu_seqlens is not None
     has_kv_lens = kv_lens is not None
     is_decode = False
+    q_for_cos_bs = q
 
     if is_varlen:
         assert q.dim() == 3 and k.dim() == 3, "q and k must be [total_seq_len, n_head, head_dim]."
@@ -414,10 +433,11 @@ def rope_fwd_impl(
         n_kv_head = k.shape[2]
         q_batch_stride, q_seq_stride = q.stride(0), q.stride(1)
         k_batch_stride, k_seq_stride = k.stride(0), k.stride(1)
+        q_for_cos_bs = q
 
-    rope_dim = int(head_dim * rope_percentage)
-    assert rope_dim == cos.shape[-1]
+    rope_dim = cos.shape[-1]
     nope_dim = head_dim - rope_dim
+    assert nope_dim >= 0, "cos/sin last dim must not exceed head_dim"
     half_rope_dim = rope_dim // 2
 
     token_block_size = _get_token_block_size(n_q_head, n_kv_head)
@@ -435,7 +455,7 @@ def rope_fwd_impl(
     total_tile_blocks = batch_size * num_seq_blocks
     grid = (ilu_grid_dim_from_row_tasks(total_tile_blocks),)
 
-    cos_batch_size = cos.shape[0]
+    cos_batch_size = _ilu_cos_batch_size(cos, q_for_cos_bs, is_varlen=is_varlen)
     cos = cos.contiguous()
     sin = sin.contiguous()
 
@@ -482,16 +502,17 @@ def rope_fwd_impl(
 def rope_bwd_impl(
     dq: torch.Tensor,
     dk: torch.Tensor,
-    sin: torch.Tensor,
     cos: torch.Tensor,
+    sin: torch.Tensor,
+    head_first: bool = True,
     cu_seqlens: Optional[torch.Tensor] = None,
     kv_lens: Optional[torch.Tensor] = None,
-    head_first: bool = True,
-    rope_percentage: float = 1.0,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Same argument order as NPU ``rope_bwd_impl`` (dq, dk, cos, sin, head_first, ...)."""
     is_varlen = cu_seqlens is not None
     has_kv_lens = kv_lens is not None
     is_decode = False
+    dq_for_cos_bs = dq
 
     if is_varlen:
         assert dq.dim() == 3 and dk.dim() == 3, "dq and dk must be [total_seq_len, n_head, head_dim]."
@@ -523,9 +544,11 @@ def rope_bwd_impl(
         n_kv_head = dk.shape[2]
         dq_batch_stride, dq_seq_stride = dq.stride(0), dq.stride(1)
         dk_batch_stride, dk_seq_stride = dk.stride(0), dk.stride(1)
+        dq_for_cos_bs = dq
 
-    rope_dim = int(head_dim * rope_percentage)
+    rope_dim = cos.shape[-1]
     nope_dim = head_dim - rope_dim
+    assert nope_dim >= 0, "cos/sin last dim must not exceed head_dim"
     half_rope_dim = rope_dim // 2
 
     token_block_size = _get_token_block_size(n_q_head, n_kv_head)
@@ -540,7 +563,7 @@ def rope_bwd_impl(
     total_tile_blocks = batch_size * num_seq_blocks
     grid = (ilu_grid_dim_from_row_tasks(total_tile_blocks),)
 
-    cos_batch_size = cos.shape[0]
+    cos_batch_size = _ilu_cos_batch_size(cos, dq_for_cos_bs, is_varlen=is_varlen)
     cos = cos.contiguous()
     sin = sin.contiguous()
 

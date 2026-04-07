@@ -2,21 +2,11 @@
 ILU: paged prefill GQA — KV gather + GQA expand in PyTorch; causal attention in Triton.
 Aligned with MojoPagedPrefillGQA (mask j <= i + (kv_seq_len - q_seq_len)).
 
-Paged decode (``paged_attention_decode_impl`` / ``paged_decode_kernel``)
-------------------------------------------------------------------------
-Host and kernel impose the following; callers must satisfy them or the launch will fail:
-
-* **KV block size upper bound**: ``block_size`` (the sequence-length slot count per physical
-  KV cache block, i.e. ``key_cache.shape[2]``) is asserted **≤ 128**. This matches the
-  current Triton row-tile limit for the decode path (temporary restriction; message may
-  say ``temp:``).
-
-* **Page size equals Triton N tile**: ``paged_decode_kernel`` passes ``PAGE_SIZE`` and
-  ``BLOCK_SIZE_N`` both from the same ``block_size`` and enforces
-  ``tl.static_assert(PAGE_SIZE == BLOCK_SIZE_N)``. So the **paged KV page size** used in
-  the kernel must be exactly the **block_ptr row tile** along the sequence axis — one
-  logical page per ``make_block_ptr`` tile. Do not mix a different nominal page size with
-  a different ``BLOCK_SIZE_N``.
+Paged decode (``paged_attention_decode_impl``)
+-----------------------------------------------
+Gathers paged KV to dense ``[T, H, D]`` per batch row, GQA-expands, then
+``_launch_causal_attn_triton`` with ``q_seq_len=1`` (same as prefill numerics).
+Works for any KV ``block_size`` (e.g. 32, 128, 1024).
 
 """
 
@@ -236,132 +226,65 @@ def paged_attention_prefill_impl(
     return outputs
 
 
-@libentry()
-@triton.jit
-def paged_decode_kernel(
-    q_ptr,
-    k_cache_ptr,
-    v_cache_ptr,
-    o_ptr,
-    seqlens_ptr,
-    block_tables_ptr,
-    BATCH_SIZE,
-    NUM_TOTAL_BLOCKS,
-    MAX_NUM_BLOCKS_PER_SEQ,
-    stride_qb,
-    stride_qh,
-    stride_qd,
-    stride_k_block,
-    stride_k_head,
-    stride_k_blksz,
-    stride_k_dim,
-    stride_v_block,
-    stride_v_head,
-    stride_v_blksz,
-    stride_v_dim,
-    stride_ob,
-    stride_oh,
-    stride_od,
-    stride_bt_batch,
-    stride_bt_block,
-    sm_scale,
-    NUM_Q_HEADS: tl.constexpr,
-    NUM_KV_HEADS: tl.constexpr,
-    GQA_INTERLEAVE: tl.constexpr,
-    HEAD_DIM: tl.constexpr,
-    PAGE_SIZE: tl.constexpr,
-    BLOCK_SIZE_D: tl.constexpr,
-    BLOCK_SIZE_N: tl.constexpr,
-    OUT_T: tl.constexpr,
-):
-    tl.static_assert(HEAD_DIM <= BLOCK_SIZE_D, "HEAD_DIM should be less than BLOCK_SIZE_D")
-    pid = tl.program_id(0)
-    n_progs = tl.num_programs(0)
+def _paged_decode_gather_and_causal(
+    q: torch.Tensor,
+    key_cache: torch.Tensor,
+    value_cache: torch.Tensor,
+    seqlens: torch.Tensor,
+    block_tables: torch.Tensor,
+    gqa_interleave: bool,
+    softmax_scale: float,
+) -> torch.Tensor:
+    """ILU paged decode: unpage KV + causal attention (one query token per batch row)."""
+    batch_size, num_q_heads, head_dim = q.shape
+    _, num_kv_heads, block_size, _ = key_cache.shape
+    o = torch.empty_like(q)
 
-    num_tasks = BATCH_SIZE * NUM_Q_HEADS
+    for i in range(batch_size):
+        kv_seq_len = int(seqlens[i].item())
+        q_batch = q[i : i + 1].contiguous()
+        num_blocks_for_seq = (kv_seq_len + block_size - 1) // block_size
 
-    for q_task_id in tl.range(pid, num_tasks, n_progs):
-        q_head_id = q_task_id % NUM_Q_HEADS
-        b_id = q_task_id // NUM_Q_HEADS
-        # Matches paged_attention_prefill_impl: interleave → % ; grouped → //
-        if GQA_INTERLEAVE:
-            kv_head_id = q_head_id % NUM_KV_HEADS
+        k_unpadded = torch.zeros(
+            kv_seq_len, num_kv_heads, head_dim, dtype=q.dtype, device=q.device
+        )
+        v_unpadded = torch.zeros(
+            kv_seq_len, num_kv_heads, head_dim, dtype=q.dtype, device=q.device
+        )
+
+        for j in range(num_blocks_for_seq):
+            physical_block_id = int(block_tables[i, j].item())
+            start_pos_in_seq = j * block_size
+            end_pos_in_seq = min(start_pos_in_seq + block_size, kv_seq_len)
+            tokens_in_block = end_pos_in_seq - start_pos_in_seq
+
+            k_slice = key_cache[physical_block_id, :, :tokens_in_block, :]
+            k_unpadded[start_pos_in_seq:end_pos_in_seq, :, :] = k_slice.permute(1, 0, 2)
+
+            v_slice = value_cache[physical_block_id, :, :tokens_in_block, :]
+            v_unpadded[start_pos_in_seq:end_pos_in_seq, :, :] = v_slice.permute(1, 0, 2)
+
+        if num_q_heads != num_kv_heads:
+            g = num_q_heads // num_kv_heads
+            if gqa_interleave:
+                k_expanded = k_unpadded.repeat((1, g, 1))
+                v_expanded = v_unpadded.repeat((1, g, 1))
+            else:
+                k_expanded = k_unpadded.repeat_interleave(g, dim=1)
+                v_expanded = v_unpadded.repeat_interleave(g, dim=1)
         else:
-            kv_head_id = q_head_id // (NUM_Q_HEADS // NUM_KV_HEADS)
+            k_expanded = k_unpadded
+            v_expanded = v_unpadded
 
-        kv_seq_len = tl.load(seqlens_ptr + b_id)
+        k_expanded = k_expanded.contiguous()
+        v_expanded = v_expanded.contiguous()
+        out_slice = torch.empty_like(q_batch)
+        _launch_causal_attn_triton(
+            q_batch, k_expanded, v_expanded, out_slice, softmax_scale, 1, kv_seq_len
+        )
+        o[i] = out_slice[0]
 
-        offs_d = tl.arange(0, BLOCK_SIZE_D)
-        q_ptrs = q_ptr + b_id * stride_qb + q_head_id * stride_qh + offs_d * stride_qd
-        q = tl.load(q_ptrs, mask=offs_d < HEAD_DIM, other=0.0)
-
-        m_i = -float("inf")
-        l_i = 0.0
-        acc = tl.zeros((BLOCK_SIZE_D,), dtype=tl.float32)
-
-        num_logical_blocks = tl.cdiv(kv_seq_len, PAGE_SIZE)
-
-        # PAGE_SIZE and BLOCK_SIZE_N are both host `block_size`; see module docstring.
-        tl.static_assert(PAGE_SIZE == BLOCK_SIZE_N, "PAGE_SIZE should be equal to BLOCK_SIZE_N")
-
-        for logical_block_idx in tl.range(0, num_logical_blocks):
-            physical_block_id = tl.load(block_tables_ptr + b_id * stride_bt_batch + logical_block_idx * stride_bt_block)
-
-            kv_block_start_in_seq = logical_block_idx * PAGE_SIZE
-            kv_block_end_in_seq = tl.minimum(kv_block_start_in_seq + PAGE_SIZE, kv_seq_len)
-            kv_block_len = kv_block_end_in_seq - kv_block_start_in_seq
-            k_block_ptr = tl.make_block_ptr(
-                base=k_cache_ptr + physical_block_id * stride_k_block + kv_head_id * stride_k_head,
-                shape=(kv_block_len, HEAD_DIM),
-                strides=(stride_k_blksz, stride_k_dim),
-                offsets=(0, 0),
-                block_shape=(BLOCK_SIZE_N, BLOCK_SIZE_D),
-                order=(1, 0),
-            )
-            v_block_ptr = tl.make_block_ptr(
-                base=v_cache_ptr + physical_block_id * stride_v_block + kv_head_id * stride_v_head,
-                shape=(kv_block_len, HEAD_DIM),
-                strides=(stride_v_blksz, stride_v_dim),
-                offsets=(0, 0),
-                block_shape=(BLOCK_SIZE_N, BLOCK_SIZE_D),
-                order=(1, 0),
-            )
-
-            mask = tl.arange(0, BLOCK_SIZE_N) < kv_block_len
-
-            k = tl.load(k_block_ptr, boundary_check=(0, 1), padding_option="zero")
-
-            qk = tl.sum((q[None, :] * k).to(tl.float32), axis=1)
-            qk *= sm_scale
-            qk = tl.where(mask, qk, float("-inf"))
-
-            m_j = tl.max(qk, axis=0)
-            m_ij = tl.maximum(m_i, m_j)
-            qk = qk - m_ij
-
-            p = tl.math.exp(qk)
-
-            p_cast = p.to(k.dtype)
-
-            v = tl.load(v_block_ptr, boundary_check=(0, 1), padding_option="zero")
-
-            l_ij = tl.sum(p, axis=0)
-
-            alpha = tl.math.exp(m_i - m_ij)
-
-            l_i = l_i * alpha + l_ij
-
-            acc = acc * alpha
-
-            acc += tl.sum((p_cast[:, None] * v).to(tl.float32), axis=0)
-
-            m_i = m_ij
-
-        m_i = m_i + tl.math.log(l_i)
-        acc = acc / l_i
-
-        o_ptrs = o_ptr + b_id * stride_ob + q_head_id * stride_oh + offs_d * stride_od
-        tl.store(o_ptrs, acc.to(OUT_T), mask=offs_d < HEAD_DIM)
+    return o
 
 
 def paged_attention_decode_impl(
@@ -373,71 +296,20 @@ def paged_attention_decode_impl(
     gqa_interleave: bool,
     softmax_scale: Optional[float] = None,
 ) -> torch.Tensor:
-    """Paged KV decode attention (one query step per batch row).
-
-    Requirements (see module docstring):
-
-    * ``key_cache`` / ``value_cache`` block length ``block_size`` (dim 2) must be **≤ 128**.
-    * That same ``block_size`` is ``PAGE_SIZE`` and ``BLOCK_SIZE_N`` in ``paged_decode_kernel``;
-      the kernel statically asserts ``PAGE_SIZE == BLOCK_SIZE_N``.
-    """
-    batch_size, num_q_heads, head_dim = q.shape
-    num_total_blocks, num_kv_heads, block_size, head_dim_cache = key_cache.shape
-
-    assert block_size <= 128, f"temp: only support block_size <= 128, but got {block_size}"
-    max_num_blocks_per_seq = block_tables.shape[1]
+    """Paged KV decode attention (one query step per batch row)."""
+    _, _, head_dim = q.shape
+    _, _, _, head_dim_cache = key_cache.shape
 
     assert head_dim == head_dim_cache
     if softmax_scale is None:
         softmax_scale = 1.0 / math.sqrt(head_dim)
 
-    o = torch.empty_like(q)
-
-    block = 256
-    grid = (triton.cdiv(batch_size * num_q_heads, block),)
-    block_size_d = triton.next_power_of_2(head_dim)
-
-    if q.dtype == torch.float16:
-        out_t = tl.float16
-    elif q.dtype == torch.bfloat16:
-        out_t = tl.bfloat16
-    else:
-        out_t = tl.float32
-
-    paged_decode_kernel[grid](
+    return _paged_decode_gather_and_causal(
         q,
         key_cache,
         value_cache,
-        o,
         seqlens,
-        block_tables.to(torch.int32),
-        batch_size,
-        num_total_blocks,
-        max_num_blocks_per_seq,
-        q.stride(0),
-        q.stride(1),
-        q.stride(2),
-        key_cache.stride(0),
-        key_cache.stride(1),
-        key_cache.stride(2),
-        key_cache.stride(3),
-        value_cache.stride(0),
-        value_cache.stride(1),
-        value_cache.stride(2),
-        value_cache.stride(3),
-        o.stride(0),
-        o.stride(1),
-        o.stride(2),
-        block_tables.stride(0),
-        block_tables.stride(1),
-        softmax_scale,
-        num_q_heads,
-        num_kv_heads,
+        block_tables,
         gqa_interleave,
-        head_dim,
-        block_size,
-        BLOCK_SIZE_D=block_size_d,
-        BLOCK_SIZE_N=block_size,
-        OUT_T=out_t,
+        float(softmax_scale),
     )
-    return o
