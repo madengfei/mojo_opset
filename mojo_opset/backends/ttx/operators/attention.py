@@ -120,7 +120,7 @@ class TTXSdpa(MojoSdpa):
         return output
 
 class TTXPagedPrefillSWA(MojoPagedPrefillSWA):
-    supported_platforms_list = ["npu"]
+    supported_platforms_list = ["npu", "mlu"]
 
     def forward(
         self,
@@ -152,7 +152,7 @@ class TTXPagedPrefillSWA(MojoPagedPrefillSWA):
 
 
 class TTXPagedDecodeSWA(MojoPagedDecodeSWA):
-    supported_platforms_list = ["npu"]
+    supported_platforms_list = ["npu", "mlu"]
 
     def forward(
         self,
